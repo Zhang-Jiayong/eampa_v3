@@ -2,6 +2,7 @@ MODULE spline
 
 USE kinds
 USE interp, ONLY: interpolate, interp4, interp4dydx, interp4dydxn, fill
+USE matrix, ONLY: inv
 USE sls, ONLY: sls_solve
 
 IMPLICIT NONE
@@ -20,7 +21,10 @@ CONTAINS
 
 INCLUDE "spline.spline_functions.f90"
 INCLUDE "spline.spline_ab.f90"
+INCLUDE "spline.spline_it.f90"
 INCLUDE "spline.spline_array.f90"
+INCLUDE "spline.get_nodes.f90"
+INCLUDE "spline.vary.f90"
 
 
 END MODULE spline

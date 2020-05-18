@@ -16,6 +16,8 @@ class rss_calc:
   def run():
     print("Calc RSS") 
     
+
+    
     # Setup EFS
     efs.init()                         # Initialise (allocate arrays)
     potential.efs_add_potentials()     # Load potentials
@@ -27,7 +29,6 @@ class rss_calc:
     b_props.bp_add()
 
     rss = rss_calc.get_rss()
-    print ('RSS: ' + str(rss))
     
     # Output to File
     efs_calc.output_energy()
@@ -40,6 +41,28 @@ class rss_calc:
     b_props.bp_output()
     b_props.bp_eos_plot()
     
+    print('')     
+    print('CONFIGS')    
+    for n in range(efs.cc):    
+      print('Config ' + str(n+1) + ':', efs.config_energy[n,2], efs.energies[n], (efs.config_energy[n,2]-efs.energies[n])**2)
+    
+    print('')   
+    for bp_id in range(bp.bp_configs_count):  
+      print('BP') 
+      print('alat:', bp.calc_alat[bp_id], bp.known_alat[bp_id], (bp.calc_alat[bp_id] - bp.known_alat[bp_id])**2)
+      print('v0:', bp.calc_v0[bp_id])
+      print('e0:', bp.calc_e0[bp_id], bp.known_e0[bp_id], (bp.calc_e0[bp_id] - bp.known_e0[bp_id])**2)
+      print('b0:', bp.calc_b0[bp_id], bp.known_b0[bp_id], (bp.calc_b0[bp_id] - bp.known_b0[bp_id])**2)
+      print("Calculated Stiffness Matrix (GPA)")
+      for i in range(6):
+        print(160.230732254e0 * bp.calc_ec[bp_id,i,:])
+      print("Known Stiffness Matrix (GPA)")
+      for i in range(6):
+        print(160.230732254e0 * bp.known_ec[bp_id,i,:])
+
+    
+    print('')
+    print('RSS: ' + str(rss))
     
     
     

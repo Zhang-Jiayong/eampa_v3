@@ -1,0 +1,10 @@
+#A
+#TYPE summed_spline
+#P1 0.9    // alpha
+#P2 -135     // d
+#P3 1.5       // re
+#P4 0.05       // re
+#P5 2.0       // re
+#P6 0.05       // re
+#L 0.0
+#U 7.0

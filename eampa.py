@@ -16,12 +16,16 @@ import re
 import sys
 import shutil
 import numpy
+import matplotlib.pyplot as plt
 import copy
+from f2py_lib.f_fnc import fnc
 from f2py_lib.f_interp import interp
 from f2py_lib.f_efs import efs
 from f2py_lib.f_bp import bp
-import matplotlib.pyplot as plt
+from f2py_lib.f_spline import spline
 from f2py_lib.f_bp import polyfit
+from f2py_lib.f_es import es
+from f2py_lib.f_sorting import sort
 import random
 
 ###########################################
@@ -40,6 +44,7 @@ class g:
          'eos': 'wd/plots/eos', 
          'ec': 'wd/plots/ec', 
          'pots': 'wd/plots/pots',  
+         'fitting': 'wd/fitting',  
          }
   
   times = {
@@ -60,14 +65,24 @@ class g:
   configs = {
             'config_files': [],
             'configs': [],
-            }
-
+            }  
+            
+  fit = {
+  'pop_size': 16,
+  'fresh_size': 8,
+  'generations': 10, 
+  'spline_cycles': 1, 
+  'spline_generations': 5, 
+  'extinction_percentage': 50,  
+  'extinction_frequency': 3,
+  }
+            
   dft_energy_adjustments = {}
   
   bulk_properties = {}
   
   labels = {}
-
+  
   tab_size = 1001
   tab_width = 4
 
@@ -141,6 +156,7 @@ class std:
         indata = 0
       elif(indata == 0 and not (char == " " and last_char == " ")):
         out = out + char
+      last_char = char
     return out   
     
   @staticmethod
@@ -470,6 +486,27 @@ class std:
     line = line + '\n'
     fh.write(line)  
   
+  @staticmethod
+  def print_file_line(title, title_pad, fields, field_pad):
+    if(type(fields) == numpy.ndarray):
+      t = fields
+      fields = []
+      for ti in t:
+        fields.append(ti)    
+    elif(type(fields) != list):
+      fields = [fields]
+    
+    line = str(title)
+    while(len(line)<title_pad):
+      line = line + ' '
+    for f in fields:
+      f_str = str(f)
+      while(len(f_str)<field_pad):
+        f_str = f_str + ' '
+      line = line + f_str + ' '
+    line = line + '\n'
+    print(line,end='')  
+
 ###########################################
 #  CLASS read_confi
 ###########################################
@@ -634,7 +671,7 @@ class eampa:
 
     labels.output()    
     configs.output()
-
+    print(g.run_type)
     if(g.run_type == 'e'):
       efs_calc.run_energy()
     elif(g.run_type == 'ef'):
@@ -643,10 +680,14 @@ class eampa:
       efs_calc.run_energy_force_stress()
     elif(g.run_type == 'bp'):
       bp_calc.run()
+    elif(g.run_type == 'es'):
+      es_calc.run()
     elif(g.run_type == 'rss'):
       rss_calc.run()
     elif(g.run_type == 'fit'): 
       pf.run()
+    elif(g.run_type == 'plot'): 
+      potential.run()
       
   def run_type():
 # Types
@@ -667,10 +708,14 @@ class eampa:
         g.run_type = 'efs'
       elif(g.inp['run']['type'].lower() == 'bp'):
         g.run_type = 'bp'
+      elif(g.inp['run']['type'].lower() == 'es'):
+        g.run_type = 'es'
       elif(g.inp['run']['type'].lower() == 'rss'):
         g.run_type = 'rss'
       elif(g.inp['run']['type'].lower() == 'fit'):
         g.run_type = 'fit'
+      elif(g.inp['run']['type'].lower() == 'plot'):
+        g.run_type = 'plot'
     except:
       pass
   
@@ -708,6 +753,15 @@ class labels:
 ###########################################
 class potential:
 
+  def run():
+
+    print("Potential") 
+  
+    efs.init()                           # Initialise (allocate arrays)
+    potential.efs_add_potentials()       # Load potentials
+    potential.plot_fortran_potentials()
+    potential.plot_python_potentials()
+    
   def load():
     pot_file = g.inp['potential']['file']
     if(not os.path.isfile(pot_file)):
@@ -718,10 +772,10 @@ class potential:
     potential.make_tabulated_points()
     potential.load_analytic()
     potential.make_analytic_points()
+    potential.load_fit_data()
     potential.pf_output()
-    
-    g.pot_functions['functions_original'] = copy.deepcopy(g.pot_functions['functions'])
-    
+    potential.make_copies()
+       
     return True
   
   @staticmethod
@@ -746,6 +800,12 @@ class potential:
     'a_u': 10.0,
     'zoor': 1,
     'points': numpy.zeros((g.tab_size,g.tab_width,),),         # THESE ARE USED BY FORTRAN
+    'points_original': numpy.zeros((g.tab_size,g.tab_width,),),         # THESE ARE USED BY FORTRAN
+    'fit_file': None,
+    'fit_type': None,         # 1 spline, 2 analytic
+    'fit_parameters': None,
+    'fit_size': None,
+    'fit_mult': None,
     }
 
 # LOAD FROM FILE
@@ -782,6 +842,8 @@ class potential:
           pot['b'] = label_id
       elif(len(row) > 1 and row[0].upper() == "FILE"):
         pot['file'] = row[1]
+      elif(len(row) > 1 and row[0].upper() == "FIT"):
+        pot['fit_file'] = row[1]
       elif(len(row) > 1 and row[0].upper() == "F_TYPE"):
         value = row[1].upper()
         if(value[0] == "P"):
@@ -805,6 +867,8 @@ class potential:
       elif(len(row) > 0 and row[0].upper() == "END"):
         g.pot_functions['functions'].append(pot)
         pot = potential.pot_function()
+    
+# READ ZBL DATA
     
     read_zbl = False
     for row in index:  
@@ -851,12 +915,21 @@ class potential:
       if(pf_file is not None and os.path.isfile(pf_file) and potential.pf_file_type(pf_file) == 'T'):
         g.pot_functions['functions'][i]['f_points'] = std.read_csv_array(pf_file, ' ')
         g.pot_functions['functions'][i]['function_type'] = 1
-          
+        
+# Fill in tabulated points using interp.fill
   @staticmethod
   def make_tabulated_points():  
     for i in range(len(g.pot_functions['functions'])):    
       if(g.pot_functions['functions'][i]['function_type'] == 1):
         g.pot_functions['functions'][i]['points'] = interp.fill(g.pot_functions['functions'][i]['f_points'][:,0], g.pot_functions['functions'][i]['f_points'][:,1], g.tab_size, g.tab_width)   
+
+# Spline and vary accordingly
+  @staticmethod
+  def vary_tabulated_points(fn, yvar=None):  
+    if(type(yvar) != numpy.ndarray):
+      yvar = numpy.zeros((10,),)
+    g.pot_functions['functions'][fn]['points'] = spline.vary(g.pot_functions['functions'][fn]['points'][:,0], 
+                                                             g.pot_functions['functions'][fn]['points'][:,1], yvar)
 
   @staticmethod
   def load_analytic():  
@@ -871,9 +944,9 @@ class potential:
             g.pot_functions['functions'][i]['a_type'] = l[1].lower()
           elif(l[0].upper()[0:2] == '#P'):
             param.append([int(l[0][2:]), float(l[1])])
-          elif(l[0].upper()[0:2] == 'L'):
+          elif(l[0].upper()[0:2] == '#L'):
             g.pot_functions['functions'][i]['a_l'] = float(l[1])
-          elif(l[0].upper()[0:2] == 'U'):
+          elif(l[0].upper()[0:2] == '#U'):
             g.pot_functions['functions'][i]['a_u'] = float(l[1])
         g.pot_functions['functions'][i]['a_params'] = numpy.zeros((len(param),),)
 
@@ -885,16 +958,90 @@ class potential:
         
   @staticmethod
   def make_analytic_points():  
-    for i in range(len(g.pot_functions['functions'])):    
-      if(g.pot_functions['functions'][i]['function_type'] == 2):
+    for fn in range(len(g.pot_functions['functions'])):  
+      if(g.pot_functions['functions'][fn]['function_type'] == 2):  
+        potential.make_analytic_points_inner(fn)
+        
+  @staticmethod
+  def make_analytic_points_inner(fn):  
 # Temp x,y array
-        temp = numpy.zeros((g.tab_size,2,),)
-        temp[:,0] = numpy.linspace(g.pot_functions['functions'][i]['a_l'], g.pot_functions['functions'][i]['a_u'], g.tab_size)
-        temp[:,1] = g.pot_functions['functions'][i]['f'](temp[:,0],  g.pot_functions['functions'][i]['a_params'])
-        
+    temp = numpy.zeros((g.tab_size,2,),)
+    temp[:,0] = numpy.linspace(g.pot_functions['functions'][fn]['a_l'], g.pot_functions['functions'][fn]['a_u'], g.tab_size)
+    temp[:,1] = g.pot_functions['functions'][fn]['f'](temp[:,0],  g.pot_functions['functions'][fn]['a_params'])
+       
 # Interpfill
-        g.pot_functions['functions'][i]['points'] = interp.fill(temp[:,0],temp[:,1], g.tab_size, g.tab_width)
+    g.pot_functions['functions'][fn]['points'] = interp.fill(temp[:,0],temp[:,1], g.tab_size, g.tab_width)
+    
+  @staticmethod
+  def load_fit_data(): 
+# READ FIT DATA
+    for fn in range(len(g.pot_functions['functions'])): 
+      if(g.pot_functions['functions'][fn]['fit_file'] != None):
+        params = None
+        fit_file = g.pot_functions['pot_dir'] + '/' + g.pot_functions['functions'][fn]['fit_file']
+        if(os.path.isfile(fit_file)):
+          fh = open(fit_file, 'r')
+          for line in fh:
+            line = std.one_space(line.strip().upper())
+            f = line.split(" ")
+            if(line[0:4] == "#FIT"):
+              if(f[-1] == 'S'):
+                g.pot_functions['functions'][fn]['fit_type'] = 1
+              elif(f[-1] == 'A'):
+                g.pot_functions['functions'][fn]['fit_type'] = 2                
+            if(line[0:3] == "#PL"):
+              params_lower = f[1:]                     
+            if(line[0:3] == "#PU"):
+              params_upper = f[1:]     
+            if(line[0:2] == "#M"):
+              g.pot_functions['functions'][fn]['fit_mult'] = numpy.zeros((2,),)
+              """
+              try:
+                g.pot_functions['functions'][fn]['fit_mult'][0] = float(f[1])
+                g.pot_functions['functions'][fn]['fit_mult'][1] = float(f[2])
+              except:  
+                g.pot_functions['functions'][fn]['fit_mult'][0] = 0.1
+                g.pot_functions['functions'][fn]['fit_mult'][1] = 10.0
+              """
+                
+          fh.close()
+        if(g.pot_functions['functions'][fn]['fit_type'] != None and type(params_lower) == list):
         
+# Analytic fitting
+          if(g.pot_functions['functions'][fn]['fit_type'] == 2 and
+             g.pot_functions['functions'][fn]['function_type'] == 2):
+            g.pot_functions['functions'][fn]['fit_size'] = len(g.pot_functions['functions'][fn]['a_params'])
+            g.pot_functions['functions'][fn]['fit_parameters'] = numpy.zeros((2,len(g.pot_functions['functions'][fn]['a_params']),),)     
+            
+            for i in range(g.pot_functions['functions'][fn]['fit_size']):
+              g.pot_functions['functions'][fn]['fit_parameters'][0,i] = float(params_lower[i])
+              g.pot_functions['functions'][fn]['fit_parameters'][1,i] = float(params_upper[i])
+              
+# Spline fitting
+          else:
+            s = len(params_lower)
+            g.pot_functions['functions'][fn]['fit_type'] = 1
+            g.pot_functions['functions'][fn]['fit_size'] = s            
+            g.pot_functions['functions'][fn]['fit_parameters'] = numpy.zeros((2,s,),) 
+            
+            for i in range(len(params_lower)):
+              g.pot_functions['functions'][fn]['fit_parameters'][0,i] = float(params_lower[i])
+              g.pot_functions['functions'][fn]['fit_parameters'][1,i] = float(params_upper[i])
+
+  @staticmethod
+  def make_copies(): 
+    for fn in range(len(g.pot_functions['functions'])): 
+      g.pot_functions['functions'][fn]['points_original'] = numpy.copy(g.pot_functions['functions'][fn]['points'])
+  
+    g.pot_functions['functions_original'] = copy.deepcopy(g.pot_functions['functions'])
+
+  @staticmethod
+  def spline_prep(): 
+    for fn in range(len(g.pot_functions['functions'])): 
+      if(g.pot_functions['functions'][fn]['fit_type'] == 2):   # If spline fit
+        yvar = numpy.zeros((len(g.pot_functions['functions'][fn]['fit_parameters']),),)
+        potential.vary_tabulated_points(fn, yvar)
+    
   @staticmethod
   def pf_file_type(file): 
     fh = open(file, 'r')
@@ -982,7 +1129,10 @@ class potential:
     }
   """    
       
-  def plot_python_potentials():  
+  def plot_python_potentials(dir = None):  
+    if(dir == None):
+      dir = g.dirs['pots']
+      
     for i in range(len(g.pot_functions['functions'])): 
       pot_name = 'py_pot'
       pot_count = i + 1
@@ -995,13 +1145,16 @@ class potential:
       else:
         label_b = g.pot_functions['functions'][i]['f_group']
         
-      potential.plot_potential(pot_name, pot_count, pot_type, label_a, label_b, 
+      potential.plot_potential(dir, pot_name, pot_count, pot_type, label_a, label_b, 
                                g.pot_functions['functions'][i]['points'][:,0], 
                                g.pot_functions['functions'][i]['points'][:,1], 
                                g.pot_functions['functions'][i]['points'][:,2], 
                                g.pot_functions['functions'][i]['points'][:,3])
       
-  def plot_fortran_potentials():  
+  def plot_fortran_potentials(dir = None):  
+    
+    if(dir == None):
+      dir = g.dirs['pots']
     
     if(efs.pc > 0):
       for i in range(efs.pc):
@@ -1016,7 +1169,7 @@ class potential:
         label_a = efs.pkey[i,3]
         label_b = efs.pkey[i,4]
       
-        potential.plot_potential(pot_name, pot_count, pot_type, label_a, label_b, 
+        potential.plot_potential(dir, pot_name, pot_count, pot_type, label_a, label_b, 
                                  efs.pot[a:b,0], efs.pot[a:b,1], 
                                  efs.pot[a:b,2], efs.pot[a:b,3])
     
@@ -1033,11 +1186,11 @@ class potential:
         label_a = bp.pkey[i,3]
         label_b = bp.pkey[i,4]
       
-        potential.plot_potential(pot_name, pot_count, pot_type, label_a, label_b, 
+        potential.plot_potential(dir, pot_name, pot_count, pot_type, label_a, label_b, 
                                  bp.pot[a:b,0], bp.pot[a:b,1], 
                                  bp.pot[a:b,2], bp.pot[a:b,3])
                                  
-  def plot_potential(pot_name, pot_count, pot_type, label_a, label_b, x, y, yp, ypp):  
+  def plot_potential(dir, pot_name, pot_count, pot_type, label_a, label_b, x, y, yp, ypp):  
       
       if(pot_type == 1):
         plot_title = "Pair - " + labels.get(label_a) + ' ' + labels.get(label_b)    
@@ -1086,7 +1239,7 @@ class potential:
          
       axs.set_ylim(min_y, max_y)
       axs.set_yscale('symlog', linthreshy=10)
-      plt.savefig(g.dirs['pots'] + '/' + file_name, format='eps')
+      plt.savefig(dir + '/' + file_name, format='eps')
       
 ###########################################################
 # F2PY functions
@@ -1131,6 +1284,46 @@ class potential:
 
 # SET POTENTIALS
     efs.set_potentials()   
+    
+  def es_add_potentials():
+  
+# Clear
+    es.clear_potentials()
+    
+# ADD POTENTIALS
+    for pf in g.pot_functions['functions']:
+      if(pf['f_on']):
+        if(pf['f_type_id'] == 1):
+          es.add_potential(
+                            pf['f_type_id'],
+                            pf['a'], 
+                            pf['b'],  
+                            pf['r_cut'], 
+                            pf['points'] 
+                           )
+        elif(pf['f_type_id'] > 1):
+          es.add_potential(
+                            pf['f_type_id'],
+                            pf['a'], 
+                            pf['f_group'],  
+                            pf['r_cut'], 
+                            pf['points'] 
+                           )    
+# ADD ZBL
+    for zbl in g.pot_functions['zbl']:
+      es.add_zbl(
+                  zbl['id_1'],
+                  zbl['id_2'], 
+                  zbl['on'],  
+                  zbl['z1'], 
+                  zbl['z2'] , 
+                  zbl['ra'] , 
+                  zbl['rb'] , 
+                  zbl['spline_type'] 
+                 )    
+
+# SET POTENTIALS
+    es.set_potentials()     
 
   def bp_add_potentials():
   
@@ -1178,50 +1371,143 @@ class potential:
 ###########################################
 class potential_functions:
 
+##############################################
+# PAIR FUNCTIONS
+##############################################
+
 # Lennard Jones Potential
 # p[0] = e
 # p[1] = rm
+# f(x) = A * ((B / r)**12 - 2 * (B/r)**6)
   @staticmethod
   def lennard_jones(r, p):
-    return p[0] * ((p[1] / r)**12 - 2 * (p[1]/r)**6)
+    return fnc.lennard_jones_v(r, p)
     
 # Morse Potential
 # p[0] = d
 # p[1] = a
 # p[2] = re
+# f(x) = A * (exp(-2.0D0 * B * (r - C)) - 2.0D0 * exp(-B*(r - C)))
   @staticmethod
   def morse(r, p):
-    return p[0] * (numpy.exp(-2 * p[1] * (r - p[2]) - 2 * numpy.exp (-p[1]*(r - p[2]))))
+    return fnc.morse_v(r, p)
+#return
 
 # Buckingham Potential
 # p[0] = A
 # p[1] = B
 # p[2] = C
+# f(x) = A * exp(-1 * B * r) - C / r**6
   @staticmethod
   def buckingham(r, p):
-    return p[0] * numpy.exp(-1 * p[1] * r) - p[2] / r**6
+    return fnc.buckingham_v(r, p)
+
+##############################################
+# DENSITY FUNCTIONS
+##############################################
 
 # Embedding Finnis-Sinclair
+  @staticmethod
+  def quadratic_density(r, p):
+    return (r - p[0])**2
+    
+# Density Finnis-Sinclair
   @staticmethod
   def density_fs(r, p):
     return (r - p[0])**2
 
 # Embedding Finnis-Sinclair
+# f(x) = -A sqrt(rho)
   @staticmethod
-  def embedding_fs(r, p):
-    return p[0] * numpy.sqrt(r)
+  def fs_embedding(r, p):
+    return fnc.fs_embedding(r, p)
+
+# Embedding Mendelev
+# f(x) = -sqrt(rho) + A*rho**2
+  @staticmethod
+  def mendelev_embedding_v(r, p):
+    return fnc.mendelev_embedding_v(r, p)
+
+# Triple Embedding
+# f(x) = A * sqrt(r) + B * r + C * r**2
+  @staticmethod
+  def triple_embedding(r, p):
+    return fnc.triple_embedding_v(r, p)
 
 # Embedding Mendelev, Han, Srolovitz, Ackland, Sun, Asta
   @staticmethod
   def embedding_1(r, p):
     return -1 * numpy.sqrt(r) + p[0] * r**2
     
-# MORSE
-# V(r) = d * (exp(-2 * a * (r - re) - 2 * exp (-a(r - re))))
-    
-# POLY3
-# V(r) = a + br + cr^2 + dr^3
+##############################################
+# SIMPLE SPLINES
+##############################################
 
+  @staticmethod
+  def summed_spline(r, p):
+    return fnc.summed_spline_v(r, p)
+    
+  @staticmethod
+  def simple_spline(r, p):
+    return fnc.simple_spline_v(r, p)
+    
+##############################################
+# NODE SPLINES
+##############################################
+   
+  @staticmethod
+  def spline_n_node(r, p):
+    return fnc.spline_n_node_v(r, p)
+    
+###########################################
+#  CLASS rescale_densit
+###########################################
+class rescale_density:
+  
+  def run():
+    
+    for fn in range(len(g.pot_functions['functions'])): 
+      if(g.pot_functions['functions'][fn]['f_type_id'] == 2):
+        min_rho = min(g.pot_functions['functions'][fn]['points'][:,1])
+        g.pot_functions['functions'][fn]['points'][:,1] = g.pot_functions['functions'][fn]['points'][:,1] - min_rho 
+        rho = rescale_density.estimate_density(fn)        
+        g.pot_functions['functions'][fn]['points'][:,1:3] = (0.5 / rho) * g.pot_functions['functions'][fn]['points'][:,1:3]
+        rho = rescale_density.estimate_density(fn)
+
+  def estimate_density(fn):
+    r = numpy.zeros((7,),)
+    rn = numpy.zeros((7,),)
+    r[0] = 7.48332e0
+    r[1] = 6.32456e0
+    r[2] = 6.92821e0
+    r[3] = 4.89898e0
+    r[4] = 5.65686e0
+    r[5] = 2.82843e0
+    r[6] = 4.0e0
+    rn[0] = 48
+    rn[1] = 24
+    rn[2] = 8
+    rn[3] = 24
+    rn[4] = 12
+    rn[5] = 12
+    rn[6] = 6    
+    rho = 0.0    
+    for i in range(7):
+      y = interp.search_x(r[i], g.pot_functions['functions'][fn]['points'][:,0], g.pot_functions['functions'][fn]['points'][:,1])
+      rho = rho + rn[i] * y
+    return rho
+    
+  def max_densities():    
+    density_list = None
+    for fn in range(len(g.pot_functions['functions'])): 
+      if(g.pot_functions['functions'][fn]['f_type_id'] == 2):
+        rho = rescale_density.estimate_density(fn) 
+        if(density_list is None):
+          density_list = str(rho)
+        else:
+          density_list = density_list + "/" + str(rho)
+    return density_list
+        
 ###########################################
 #  CLASS potential_var
 ###########################################
@@ -3608,6 +3894,71 @@ class b_props:
       fh.close()
 
   @staticmethod
+  def bp_output_terminal():  
+  
+    for bp_id in range(bp.bp_configs_count):
+      fh = open(g.dirs['results'] + '/' + 'bp_' + str(bp_id + 1) + '.dat', 'w')
+
+      t_pad = 30
+      f_pad = 18
+      
+      std.print_file_line('######################################################', 1, '', 1)
+      std.print_file_line('Known Properties', 1, '', 1)
+      std.print_file_line('######################################################', 1, '', 1)
+      std.print_file_line('', 1, '', 1)
+      std.print_file_line('All units are in ev/Ang unless specified', 1, '', 1)
+      std.print_file_line('Energy: eV', 1, '', 1)
+      std.print_file_line('Length: ang', 1, '', 1)
+      std.print_file_line('Force: eV/ang', 1, '', 1)
+      std.print_file_line('Pressure: eV/ang3', 1, '', 1)
+      std.print_file_line('', 1, '', 1)
+      
+      std.print_file_line('Atoms per crystal:', t_pad, bp.known_atoms_per_crystal[bp_id], f_pad)
+      std.print_file_line('Expansion:', t_pad, bp.known_expansion[bp_id], f_pad)
+      std.print_file_line('', 1, '', 1)
+      std.print_file_line('Equation of State', 1, '', 1)
+      std.print_file_line('#################', 1, '', 1)
+      std.print_file_line('alat:', t_pad, bp.known_alat[bp_id], f_pad)
+      std.print_file_line('e0:', t_pad, bp.known_e0[bp_id], f_pad)
+      std.print_file_line('b0:', t_pad, bp.known_b0[bp_id], f_pad)
+      std.print_file_line('b0/GPA:', t_pad, 160.230732254e0 * bp.known_b0[bp_id], f_pad)
+      std.print_file_line('', 1, '', 1)
+      std.print_file_line('Stiffness Matrix', 1, '', 1)
+      std.print_file_line('#################', 1, '', 1)
+      std.print_file_line('Stiffness:', t_pad, bp.known_ec[bp_id,0,:], f_pad)
+      for i in range(1,6):   
+        std.print_file_line('', t_pad, bp.known_ec[bp_id,i,:], f_pad)
+      std.print_file_line('', 1, '', 1)
+      
+      std.print_file_line('Stiffness (GPA):', t_pad, 160.230732254e0 * bp.known_ec[bp_id,0,:], f_pad)
+      for i in range(1,6):   
+        std.print_file_line('', t_pad, 160.230732254e0 * bp.known_ec[bp_id,i,:], f_pad)
+        
+      print()
+      print()
+
+      std.print_file_line('######################################################', 1, '', 1)
+      std.print_file_line('Calculated Properties', 1, '', 1)
+      std.print_file_line('######################################################', 1, '', 1)
+      std.print_file_line('', 1, '', 1)
+      
+      std.print_file_line('Equation of State', 1, '', 1)
+      std.print_file_line('#################', 1, '', 1)
+      std.print_file_line('alat:', t_pad, bp.calc_alat[bp_id], f_pad)
+      std.print_file_line('v0:', t_pad, bp.calc_v0[bp_id], f_pad)
+      std.print_file_line('e0:', t_pad, bp.calc_e0[bp_id], f_pad)
+      std.print_file_line('b0:', t_pad, bp.calc_b0[bp_id], f_pad)
+      std.print_file_line('b0/GPA:', t_pad, 160.230732254e0 * bp.calc_b0[bp_id], f_pad)
+      std.print_file_line('', 1, '', 1)  
+      
+      std.print_file_line('Stiffness Matrix', 1, '', 1)
+      std.print_file_line('#################', 1, '', 1)
+      std.print_file_line('Stiffness:', t_pad, bp.calc_ec[bp_id,0,:], f_pad)
+      for i in range(1,6):   
+        std.print_file_line('', t_pad, bp.calc_ec[bp_id,i,:], f_pad)
+      std.print_file_line('', 1, '', 1)
+        
+  @staticmethod
   def bp_eos_plot():       
   
     for bp_id in range(bp.bp_configs_count):
@@ -3693,7 +4044,7 @@ class efs_calc:
     efs_calc.output_energy()
     potential.plot_fortran_potentials()
     potential.plot_python_potentials()
-  
+    
   def run_energy_force():
   
     print("Calc Energy and Forces") 
@@ -3723,6 +4074,8 @@ class efs_calc:
     potential.plot_fortran_potentials()
     potential.plot_python_potentials()
   
+#efs.max_density_calc()
+
   def output_energy():
   
     t_pad = 12
@@ -3826,6 +4179,9 @@ class bp_calc:
     bp.energy()
     bp.calculate_bp()    
     
+# Output to Terminal
+    b_props.bp_output_terminal()
+    
 # Output to File
     b_props.bp_output()
     
@@ -3834,6 +4190,35 @@ class bp_calc:
     potential.plot_fortran_potentials()
     potential.plot_python_potentials()
     
+###########################################
+#  CLASS es_cal
+###########################################
+class es_calc:
+
+  def run():  
+  
+    print("Energies: Surface, Vacany etc") 
+
+# Setup ES
+    es.init()
+    potential.es_add_potentials()
+    es_calc.es_add()
+    es.energy()
+    for i in range(es.cc):
+      print(es.config_energy[i,:])
+
+  @staticmethod
+  def es_add():  
+# Test values
+    
+    rcut = 6.5
+    alat = 4.04
+    label = 1
+    type = 3
+      
+# Add Config
+    es_id = es.add_es_config(rcut, alat, label, type)
+
 ###########################################
 #  CLASS rss_cal
 ###########################################
@@ -3853,7 +4238,6 @@ class rss_calc:
     b_props.bp_add()
 
     rss = rss_calc.get_rss()
-    print ('RSS: ' + str(rss))
     
 # Output to File
     efs_calc.output_energy()
@@ -3865,6 +4249,28 @@ class rss_calc:
     potential.plot_python_potentials()
     b_props.bp_output()
     b_props.bp_eos_plot()
+    
+    print('')     
+    print('CONFIGS')    
+    for n in range(efs.cc):    
+      print('Config ' + str(n+1) + ':', efs.config_energy[n,2], efs.energies[n], (efs.config_energy[n,2]-efs.energies[n])**2)
+    
+    print('')   
+    for bp_id in range(bp.bp_configs_count):  
+      print('BP') 
+      print('alat:', bp.calc_alat[bp_id], bp.known_alat[bp_id], (bp.calc_alat[bp_id] - bp.known_alat[bp_id])**2)
+      print('v0:', bp.calc_v0[bp_id])
+      print('e0:', bp.calc_e0[bp_id], bp.known_e0[bp_id], (bp.calc_e0[bp_id] - bp.known_e0[bp_id])**2)
+      print('b0:', bp.calc_b0[bp_id], bp.known_b0[bp_id], (bp.calc_b0[bp_id] - bp.known_b0[bp_id])**2)
+      print("Calculated Stiffness Matrix (GPA)")
+      for i in range(6):
+        print(160.230732254e0 * bp.calc_ec[bp_id,i,:])
+      print("Known Stiffness Matrix (GPA)")
+      for i in range(6):
+        print(160.230732254e0 * bp.known_ec[bp_id,i,:])
+
+    print('')
+    print('RSS: ' + str(rss))
     
   def get_rss():
     
@@ -3915,40 +4321,106 @@ class pf:
   
 # Parameter arrays
   ps = None
-  ps_key = []
+  p_var = None
   p_width = 0
-  since_improvement = 0
 
+# Rescale Density  0.0 to 1.0 (max is approximated)
+  rescale_on = True
+  
 # Variance Coeffs
-  vc_initial_mult = 2.0
-  vc_initial_add = 2.0
-  vc_mutation = 0.2
   vc_extinction = 0.2
 
-  pv_initial = 2.0
-  pv_mult = 10.0
-  pv_add = 10.0
-  pv_fresh = 5.0
-  
-  ext_thresh = 0.5
-  gen_per_ext = 10
-  
   ncv = 0.05
   tab_nodes = 10
   generations = 200
+  spline_generations = 20
   breed_switch = 0.5
 
-  def run():
-    print("POT FITTING")
+  extinction_counter = 0
+  extinction_percentage = 50
+  extinction_frequency = 3
+  extinction_threshold_t = 0.0
+  extinction_threshold_k = 0.0
+
+# Record alat, e0, b0
+  bulk_properties = None
+
+# PROGRESS COUNTERS
+  stage = 'INITIALISING'
+  start_time = 0.0
+  time_per_calc = 0.0
+  time_estimate = 0.0
+  time_remaining = 0.0
+  since_improvement = 0
+  this_gen = 0
+  this_cycle = 0
+  total_generations = 0
+  last_rss = 0.0
+  best_rss = 0.0
+  calc_counter = 0
+  calc_counter_expected = 0
+  progress = 0
+
+# Potential Output
+  output_counter = 0
+  
+  def run():    
     
 # Read parameter variance
     try:
       pf.pv_in = g.inp['fit']['variance']
     except:
       pass
+      
+# Read from input into globals
+    try:
+      g.fit['generations'] = g.inp['fit']['gens']
+    except:
+      pass
+    try:
+      g.fit['spline_generations'] = g.inp['fit']['sgens']
+    except:
+      pass
+    try:
+      g.fit['spline_cycles'] = g.inp['fit']['scycles']
+    except:
+      pass
+    try:
+      g.fit['pop_size'] = g.inp['fit']['ps']
+    except:
+      pass
+    try:
+      g.fit['fresh_size'] = g.inp['fit']['fs']
+    except:
+      pass
+    try:
+      g.fit['extinction_percentage'] = g.inp['fit']['ep']
+    except:
+      pass
+    try:
+      g.fit['extinction_frequency'] = g.inp['fit']['ef']
+    except:
+      pass
+    try:
+      g.fit['enhance_frequency'] = g.inp['fit']['ehf']
+    except:
+      pass
+      
+# Set pf globals
+    pf.generations = g.fit['generations']
+    pf.spline_generations = g.fit['spline_generations']
+    pf.spline_cycles = g.fit['spline_cycles']
+    pf.pop_size = g.fit['pop_size']
+    pf.fresh_size = g.fit['fresh_size']
+    pf.extinction_percentage = g.fit['extinction_percentage']
+    pf.extinction_frequency = g.fit['extinction_frequency']
+    pf.enhance_frequency = g.fit['enhance_frequency']
     
 # Set Up EFS and BP
     pf.set_up()
+    
+# Run start up screen
+    pf.startup()
     
 # Start fit
     pf.fit()
@@ -3957,7 +4429,54 @@ class pf:
 #  rss = pot_fit.get_rss()
 #  print(i+1, rss)
       
+  def startup():
+  
+    os.system('cls' if os.name == 'nt' else 'clear')    
+    start_rss = pf.get_rss_startup()
+    
+    print("###################################################")      
+    print("Starting RSS: ", start_rss)   
+    print("###################################################") 
+    print("Potential Parameters")
+    print("###################################################")   
+    pf.print_parameters() 
+    
+    time.sleep(2.5)
+    
+  def print_parameters():  
+    for fn in range(len(g.pot_functions['functions'])):          
+      if(g.pot_functions['functions'][fn]['fit_type'] == 1):     # SPLINE
+        print("fn: " + str(fn))
+        print("type: spline")
+        for i in range(g.pot_functions['functions'][fn]['fit_size']):
+          print("Parameter " + str(i) + ": ", end='')
+          print(g.pot_functions['functions'][fn]['fit_parameters'][0,i], end='')
+          print(", ", end='')
+          print(g.pot_functions['functions'][fn]['fit_parameters'][1,i], end='')
+          print()
+#pf.p_width = pf.p_width + g.pot_functions['functions'][fn]['fit_size']
+      elif(g.pot_functions['functions'][fn]['fit_type'] == 2):   # ANALYTIC
+        print("fn: " + str(fn))
+        print("type: analytic")
+        for i in range(g.pot_functions['functions'][fn]['fit_size']):
+          print("Parameter " + str(i) + ": ", end='')
+          print(g.pot_functions['functions'][fn]['a_params'][i], end='')
+          print(", ", end='')
+          print(g.pot_functions['functions'][fn]['fit_parameters'][0,i], end='')
+          print(", ", end='')
+          print(g.pot_functions['functions'][fn]['fit_parameters'][1,i], end='')
+          print()
+      else:
+        print("fn: " + str(fn))
+        print("type: no variance")
+    
   def set_up():
+  
+# If a spline fit, convert into a spline
+    for fn in range(len(g.pot_functions['functions'])):       
+      if(g.pot_functions['functions'][fn]['fit_type'] == 1): 
+        potential.vary_tabulated_points(fn)
+  
 # Setup EFS
     efs.init()                         # Initialise (allocate arrays)
     potential.efs_add_potentials()     # Load potentials
@@ -3968,7 +4487,53 @@ class pf:
     potential.bp_add_potentials()
     b_props.bp_add()
     
+    rescale_density.run()
+    
   def get_rss():
+    pf.calc_counter = pf.calc_counter  + 1
+    pf.progress = min(int(numpy.floor(100 * (pf.calc_counter / pf.calc_counter_expected))), 100)
+    pf.time_per_calc = (time.time() - pf.start_time) / pf.calc_counter
+    remaining = max(0, pf.calc_counter_expected - pf.calc_counter)
+    pf.time_remaining = pf.time_per_calc * remaining
+    pf.time_estimate = pf.time_per_calc * pf.calc_counter_expected
+    
+# Run efs calc
+    if(efs.cc > 0):
+      efs.rss_calc()
+      rss = efs.total_rss_weighted / efs.cc
+    else:
+      rss = 0.0    
+      
+# Bulk property rss
+    bp.energy()
+    bp.calculate_bp() 
+    try:
+      rss = rss + g.inp['rss']['bp'] * bp.rss_total_rss
+    except: 
+      rss = rss + bp.rss_total_rss  
+      
+# Store last bp
+    try:
+      if(pf.bulk_properties is None):
+        bp_id_max = 0
+        for bp_id in range(bp.bp_configs_count):
+          if(bp_id + 1 > bp_id_max):
+            bp_id_max = bp_id + 1 
+        pf.bulk_properties = numpy.zeros((bp_id_max, 20,),)
+      for bp_id in range(bp.bp_configs_count):
+        pf.bulk_properties[bp_id,0] = bp.known_alat[bp_id]
+        pf.bulk_properties[bp_id,1] = bp.known_e0[bp_id]
+        pf.bulk_properties[bp_id,2] = 160.230732254e0 * bp.known_b0[bp_id]
+        pf.bulk_properties[bp_id,3] = bp.calc_alat[bp_id]
+        pf.bulk_properties[bp_id,4] = bp.calc_e0[bp_id]
+        pf.bulk_properties[bp_id,5] = 160.230732254e0 * bp.calc_b0[bp_id]
+    except:
+      pass
+# print(pf.bulk_properties)
+
+    return rss
+   
+  def get_rss_startup():    
 # Run efs calc
     if(efs.cc > 0):
       efs.rss_calc()
@@ -3984,28 +4549,141 @@ class pf:
       rss = rss + bp.rss_total_rss          
     return rss
     
-  def update_potential(p):
-    
+  def update_potential(p):    
 # Update potential
-    for fn in range(len(g.pot_functions['functions'])):  
-      a = pf.ps_key[fn][1]
-      b = pf.ps_key[fn][2]        
-      if(g.pot_functions['functions'][fn]['function_type'] == 1):     # TABULATED
-        pass
-      elif(g.pot_functions['functions'][fn]['function_type'] == 2):   # ANALYTIC
-        g.pot_functions['functions'][fn]['a_params'][:] = p[a:b]
-        
-# Make Tabulated Points
-    potential.make_tabulated_points()
-    
+    a = 0
+    for fn in range(len(g.pot_functions['functions'])): 
+      if(g.pot_functions['functions'][fn]['fit_type'] == 1):     # SPLINE    
+###NEED TO REDO MAYBE??###
+      
+# Calc b
+        b = a + g.pot_functions['functions'][fn]['fit_size']          
+# LOAD ORIGINAL
+        g.pot_functions['functions'][fn]['points'] = numpy.copy(g.pot_functions['functions'][fn]['points_original'])        
+# VARY SPLINE
+        potential.vary_tabulated_points(fn, p[a:b])
+# Update a
+        a = b        
+      elif(g.pot_functions['functions'][fn]['fit_type'] == 2):   # ANALYTIC  
+        b = a + g.pot_functions['functions'][fn]['fit_size'] 
 # Make Analytic Points
-    potential.make_analytic_points()
-    
+        g.pot_functions['functions'][fn]['a_params'][:] = p[a:b]
+        potential.make_analytic_points_inner(fn)
+        a = b    
+      
+# Rescale density functions 0.0 to 1.0
+    if(pf.rescale_on):
+      rescale_density.run()
+
 # Update efs and bp modules
     potential.efs_add_potentials()     # Load potentials
     potential.bp_add_potentials()      # Load potentials
     
+  def spline_cycles_prep(cycle):
+# Update with best
+    pf.update_potential(pf.ps[-5,:])
+    pw = 0
+    pw_per_f = 15
+   
+# Update potential fit settings
+    for fn in range(len(g.pot_functions['functions'])): 
+# Replace original points with new points
+      g.pot_functions['functions'][fn]['points_original'] = numpy.copy(g.pot_functions['functions'][fn]['points'])  
+# fit type to spline
+      g.pot_functions['functions'][fn]['fit_type'] = 1  
+      g.pot_functions['functions'][fn]['fit_size'] = pw_per_f    
+      g.pot_functions['functions'][fn]['fit_parameters'] = numpy.zeros((pw_per_f, ),)
+      g.pot_functions['functions'][fn]['fit_parameters'][:] = 10 * 0.1**cycle
+      g.pot_functions['functions'][fn]['fit_parameters'][-1] = 0.0  # Don't move last node
+      g.pot_functions['functions'][fn]['fit_mult'] = 1.0
+      pw = pw + pw_per_f
+      
+# Update
+    z = numpy.zeros((pw, ),)
+    pf.update_potential(z)
+    
   def fit():
+# Init counters
+    pf.start_time = time.time()
+    pf.since_improvement = 0
+    pf.improvement_time = time.time()
+    pf.this_gen = 0
+    pf.extinction_counter = 0
+    pf.extinction_threshold_k = 0.0
+    pf.extinction_threshold_t = 0.0
+    pf.this_cycle = 0
+    pf.total_generations = 0
+    pf.last_rss = 0.0
+    pf.best_rss = 0.0
+    pf.calc_counter = 0    
+    pf.estimate_calc_counter()
+
+    pf.cycle(1)
+    
+    """
+# OUTPUT FIT
+    pf.update_potential(pf.ps[-5,:])
+    
+    if(pf.spline_cycles > 0):
+      for i in range(pf.spline_cycles):
+        pf.update_potential(pf.ps[-5,:])
+        pf.spline_cycles_prep(i)
+        pf.cycle(i+2)
+        pf.update_potential(pf.ps[-5,:])
+    
+    potential.pf_output()
+    potential.plot_python_potentials()
+    potential.plot_fortran_potentials()
+    """
+    
+  def start_cycle(): 
+# Pop size
+    pf.pop_size_d = 2 * pf.pop_size
+    pf.fresh_size_d = 2 * pf.fresh_size    
+    pf.arr_len = pf.pop_size_d + pf.fresh_size_d + pf.pop_overflow
+    pf.child_len = pf.pop_size_d + pf.fresh_size_d + pf.fresh_size_d
+    
+# Find width
+    pf.p_width = 0
+    for fn in range(len(g.pot_functions['functions'])):          
+      if(g.pot_functions['functions'][fn]['fit_type'] == 1):     # SPLINE
+        pf.p_width = pf.p_width + g.pot_functions['functions'][fn]['fit_size'] 
+      elif(g.pot_functions['functions'][fn]['fit_type'] == 2):   # ANALYTIC
+        pf.p_width = pf.p_width + g.pot_functions['functions'][fn]['fit_size']
+    
+# MAKE ARRAYS
+    pf.p_var = numpy.zeros((2, pf.p_width,),)
+    pf.ps = numpy.zeros((pf.arr_len, pf.p_width,),)
+    pf.rss = numpy.zeros((pf.arr_len,),)   
+    pf.p_children = numpy.zeros((pf.child_len, pf.p_width,),)
+    pf.rss_children = numpy.zeros((pf.child_len,),)
+    pf.rss_list = numpy.zeros((pf.pop_size_d + pf.child_len,),)
+    pf.p_temp = numpy.zeros((pf.pop_size_d, pf.p_width,),)
+    pf.rss_temp = numpy.zeros((pf.pop_size_d,),)
+    pf.p_top = numpy.zeros((int(pf.pop_size_d / 4), pf.p_width,),)
+    pf.rss_sort = numpy.zeros((pf.pop_size_d,),)
+    
+# SET Variation
+    a = 0
+    for fn in range(len(g.pot_functions['functions'])):        
+      if(g.pot_functions['functions'][fn]['fit_type'] == 1):     # TABULATED      
+        b = a + g.pot_functions['functions'][fn]['fit_size']     
+        pf.p_var[0,a:b] = g.pot_functions['functions'][fn]['fit_parameters'][0,:]  # Lower
+        pf.p_var[1,a:b] = g.pot_functions['functions'][fn]['fit_parameters'][1,:]  # Upper
+        a = b 
+      elif(g.pot_functions['functions'][fn]['fit_type'] == 2):   # ANALYTIC  
+        b = a + g.pot_functions['functions'][fn]['fit_size'] 
+        pf.p_var[0,a:b] = g.pot_functions['functions'][fn]['fit_parameters'][0,:]  # Lower
+        pf.p_var[1,a:b] = g.pot_functions['functions'][fn]['fit_parameters'][1,:]  # Upper
+        a = b  
+        
+#    yvar = numpy.zeros((len(g.pot_functions['functions'][fn]['fit_parameters']),),)
+#    potential.vary_tabulated_points(fn, yvar)
+        
+# SET -1.0 for best rss
+    pf.rss[-5] = -1.0
+        
+  def cycle(c):
     """
     pv_in = 0.1
     pop_half_size = 8
@@ -4021,131 +4699,225 @@ class pf:
     -4  child b
     -5  best
     """
+    time_start = time.time()
     
-    spline_temp = numpy.linspace(1.0,10.0, pf.tab_nodes)
+# Counter
+    pf.this_cycle = pf.this_cycle + 1
+    pf.this_gen = 0
     
-# Pop size
-    pf.pop_size_d = 2 * pf.pop_size
-    pf.fresh_size_d = 2 * pf.fresh_size
+# Start Cycle   (calculate width,
+    pf.start_cycle()
     
-    pf.arr_len = pf.pop_size_d + pf.fresh_size_d + pf.pop_overflow
-    
-# Fill ps_key and find width of parameter table
-    pf.ps_key = []
-    for fn in range(len(g.pot_functions['functions'])):   
-      pf.ps_key.append([None,None,None,None])
-    
-    pf.p_width = 0
+# SAVE Starting Parameters
     a = 0
-    for fn in range(len(g.pot_functions['functions'])):          
-      if(g.pot_functions['functions'][fn]['function_type'] == 1):     # TABULATED
-        pf.p_width = pf.p_width + pf.tab_nodes   
-        b = a + pf.tab_nodes
-        pf.ps_key[fn][0] = 1
-        pf.ps_key[fn][1] = a
-        pf.ps_key[fn][2] = b
-        a = a + pf.tab_nodes
-      elif(g.pot_functions['functions'][fn]['function_type'] == 2):   # ANALYTIC
-        pf.p_width = pf.p_width + len(g.pot_functions['functions'][fn]['a_params'])
-        b = a + len(g.pot_functions['functions'][fn]['a_params'])
-        pf.ps_key[fn][0] = 2
-        pf.ps_key[fn][1] = a
-        pf.ps_key[fn][2] = b
-        a = a + len(g.pot_functions['functions'][fn]['a_params'])
-#ps
-    
-# Make Array
-    pf.ps = numpy.zeros((pf.arr_len, pf.p_width,),)
-    pf.rss = numpy.zeros((pf.arr_len,),)
-    
-# Load Starting Parameters
-    for fn in range(len(g.pot_functions['functions'])):          
-      if(g.pot_functions['functions'][fn]['function_type'] == 1):     # TABULATED
-        a = pf.ps_key[fn][1]
-        b = pf.ps_key[fn][2]
-        pf.ps[-1,a:b] = spline_temp[:] # Temporary 
-      elif(g.pot_functions['functions'][fn]['function_type'] == 2):   # ANALYTIC
-        a = pf.ps_key[fn][1]
-        b = pf.ps_key[fn][2]
+    for fn in range(len(g.pot_functions['functions'])):        
+      if(g.pot_functions['functions'][fn]['fit_type'] == 1):     # TABULATED      
+        b = a + g.pot_functions['functions'][fn]['fit_size']     
+        pf.ps[-1,a:b] = numpy.zeros((g.pot_functions['functions'][fn]['fit_size'],),)
+        a = b
+      elif(g.pot_functions['functions'][fn]['fit_type'] == 2):   # ANALYTIC  
+        b = a + g.pot_functions['functions'][fn]['fit_size'] 
         pf.ps[-1,a:b] = g.pot_functions['functions'][fn]['a_params'][:]
-   
-# Create initial population
-    for p in range(pf.pop_size_d):
+        a = b
+
+# Update and calculate starting rss
+    pf.update_potential(pf.ps[-1,:])
+    pf.rss[-1] = pf.get_rss() 
+    
+# Try within the range provided
+    
+# Create initial population - First half
+    pf.stage = 'Initialising population - First Half'
+    for p in range(pf.pop_size):
       if(p == 0):
         pf.ps[p,:] = pf.ps[-1,:]
       else:
-        r = numpy.random.rand(pf.p_width)
-        if(p % 2 == 0):
-          pf.ps[p,:] = (0.5 - r) * pf.vc_initial_mult * pf.ps[-1,:]
-        else:
-          pf.ps[p,:] = (1.0 + (0.5 - r) * pf.vc_initial_add) * pf.ps[-1,:]
-
-# Calc rss for initial population
-    for p in range(pf.pop_size_d):
+        pf.ps[p,:] = pf.ps[-1,:]
+                
+# Calculate and save RSS
+      pf.ps[p,:] = pf.random_p(0.0, 1.0)
       pf.update_potential(pf.ps[p,:])
       pf.rss[p] = pf.get_rss() 
-      if(p==0 or pf.rss[p] < pf.rss[-5]):
-        pf.ps[-5,:] = pf.ps[p,:]
-        pf.rss[-5] = pf.rss[p]
-      print(pf.rss[p], pf.rss[-5])
-    pf.rss[-1] = pf.rss[0]
-    
-# Make Mutation Array
-    pf.make_mutation()
-    
+      pf.check_improvement(pf.ps[p,:], pf.rss[p])
+
+# Look in a wider range
+
+# Create initial population - Second half
+    pf.stage = 'Initialising population - Second Half'
+    m = 0.5
+    m_inc = (10.0-0.5) / (pf.pop_size - 1)
+    for p in range(pf.pop_size, pf.pop_size_d):
+      loop = True
+      while(loop):  
+        pf.ps[p,:] = pf.random_p(0.0, m)
+        pf.update_potential(pf.ps[p,:])
+        pf.rss[p] = pf.get_rss() 
+        if(not numpy.isnan(pf.rss[p])):
+          loop = False
+          pf.check_improvement(pf.ps[p,:], pf.rss[p])
+          m = m + m_inc
+
+###################################
 # LOOP THROUGH GENERATIONS
+###################################
+    
+    gens = pf.generations
+    if(c > 1):    
+      gens = pf.spline_generations
     pf.since_improvement = 0
-    for gen in range(pf.generations):
+    for gen in range(gens):
+      pf.this_gen = gen + 1
     
       parents = numpy.arange(pf.pop_size_d)
       numpy.random.shuffle(parents)
 
+      pf.stage = 'Looping population'
+      
+#######################
+# Parents + Parents
+#######################
+      
+      ca = 0
 # Loop through population
       for p in range(pf.pop_size):   
         pa = parents[p]
         pb = parents[p + pf.pop_size]
         
 # Breed
-        pf.since_improvement = pf.since_improvement + 1
-        pf.breed(pa, pb)
+        pf.breed(pa, pb, ca, ca + 1)
         
-# Run with children and save if better
-        pf.pp_children(pa, pb)
-        
-        print(pf.rss[-3], pf.rss[-4], pf.rss[-5], pf.since_improvement)
-        
-# MAKE FRESH PARAMETERS
-      for p_fresh in range(pf.pop_size_d, pf.pop_size_d + pf.fresh_size_d):  
-        if(p_fresh % 2 == 0):
-          r = numpy.random.rand(pf.p_width)
-          pf.ps[p_fresh,:] = (0.5 - r) * pf.pv_mult * pf.ps[-5,:]      
-        else:
-          pf.ps[p_fresh,:] = (0.5 - r) * pf.pv_add + pf.ps[-5,:] 
+# Run calculations
+        pf.update_potential(pf.p_children[ca, :])        
+        pf.rss_children[ca] = pf.get_rss()  
+        pf.check_improvement(pf.p_children[ca,:], pf.rss_children[ca])      
           
+        pf.update_potential(pf.p_children[ca+1, :])        
+        pf.rss_children[ca+1] = pf.get_rss()  
+        pf.check_improvement(pf.p_children[ca+1,:], pf.rss_children[ca+1])
+                
+# Increment
+        ca = ca + 2
+ 
+# MAKE FRESH PARAMETERS
+      m = 0.5
+      m_inc = (10.0-0.5) / (pf.fresh_size_d - 1)
+      for p_fresh in range(pf.pop_size_d, pf.pop_size_d + pf.fresh_size_d):          
+        pf.ps[p_fresh,:] = pf.random_p(pf.ps[-5,:], m)
+        m = m + m_inc
+      
+#######################
+# Parents + Fresh
+#######################
+      
 # Pick parents
       parents = numpy.arange(pf.pop_size_d)
       numpy.random.shuffle(parents)
       
+      pf.stage = 'Looping population + fresh pool'
 # Breed random parents with fresh pool
       pa_n = 0
       for p_fresh in range(pf.pop_size_d, pf.pop_size_d + pf.fresh_size_d):
         pa = parents[pa_n]
         
 # Breed
-        pf.since_improvement = pf.since_improvement + 1
-        pf.breed(pa, p_fresh)
+        pf.breed(pa, p_fresh, ca, ca + 1)
         
-# Run with children and save if better
-        pf.pf_children(pa)
-        print(pf.rss[-3], pf.rss[-4], pf.rss[-5], pf.since_improvement)
+# Run calculations
+        pf.update_potential(pf.p_children[ca, :])        
+        pf.rss_children[ca] = pf.get_rss()  
+        pf.check_improvement(pf.p_children[ca, :], pf.rss_children[ca])     
+          
+        pf.update_potential(pf.p_children[ca+1, :])        
+        pf.rss_children[ca + 1] = pf.get_rss()  
+        pf.check_improvement(pf.p_children[ca+1, :], pf.rss_children[ca+1])
+         
+# Increment
+        ca = ca + 2
         
-      if((gen % pf.gen_per_ext) == 0 and gen > 0 and gen < pf.generations-1):
+#######################
+# Select Best
+#######################
+        
+      pf.rss_list[:pf.pop_size_d] = pf.rss[:pf.pop_size_d]
+      pf.rss_list[pf.pop_size_d:] = pf.rss_children[:]
+
+      rss_sorted = sort.sort_1d_dp_asc(pf.rss_list)
+      rt = rss_sorted[pf.pop_size_d-1]
+
+# SELECT BEST FROM PARENTS AND CHILDREN FOR NEXT GEN
+      n = 0
+      for i in range(pf.pop_size_d):
+        if(pf.rss[i] < rt):
+          pf.p_temp[n,:] = pf.ps[i,:]
+          pf.rss_temp[n] = pf.rss[i]
+          n = n + 1          
+      for i in range(len(pf.rss_children)):
+        if(pf.rss_children[i] < rt):
+          pf.p_temp[n,:] = pf.p_children[i,:]
+          pf.rss_temp[n] = pf.rss_children[i]
+          n = n + 1
+      for i in range(pf.pop_size_d):
+        if(pf.rss[i] == rt and n < pf.pop_size_d):
+          pf.p_temp[n,:] = pf.ps[i,:]
+          pf.rss_temp[n] = pf.rss[i]
+          n = n + 1      
+      for i in range(len(pf.rss_children)):
+        if(pf.rss_children[i] == rt and n < pf.pop_size_d):
+          pf.p_temp[n,:] = pf.p_children[i,:]
+          pf.rss_temp[n] = pf.rss_children[i]
+          n = n + 1
+          
+# UPDATE RSS AND PS
+      pf.rss[1:pf.pop_size_d] = numpy.copy(pf.rss_temp[1:pf.pop_size_d])  
+      pf.ps[1:pf.pop_size_d] = numpy.copy(pf.p_temp[1:pf.pop_size_d])  
+
+# RUN EXTINCTION EVENT
+      if((gen % pf.extinction_frequency) == 0 and gen > 0 and gen < pf.generations-1):
+        pf.stage = 'Extinction event'
         pf.extinction()
+
+# RUN ENHANCE EVENT
+      if(((gen + 1) % pf.enhance_frequency) == 0):
+        pf.stage = 'Enhancing Top 10% With Steepest Descent'
+        pf.enhance()
+        
+# SAVE POTENTIAL
+      pf.output()
         
 # Run end function
-    pf.end()    
-        
-  def breed(pa, pb):    
+    pf.stage = 'End' 
+    results = pf.end()   
+    pf.progress = 100
+    pf.time_remaining = 0.0
+    progress.display(results) 
+    
+  def rss_threshold(f=50):
+    rss_sorted = sort.sort_1d_dp_asc(pf.rss[0:pf.pop_size_d])
+    t = int(numpy.floor(len(rss_sorted) * (f / 100)))
+    return rss_sorted[t]
+    
+  def check_improvement(params, rss): 
+# Increment Improvement Counter
+    pf.since_improvement = pf.since_improvement + 1 
+   
+# Update best (if better)
+    if(pf.rss[-5] < 0 or rss < pf.rss[-5]):
+      pf.ps[-5,:] = params
+      pf.rss[-5] = rss  
+      pf.improvement_time = time.time()  
+      pf.since_improvement = 0
+      pf.best_rss = pf.rss[-5]
+      
+      pf.bulk_properties[:,6:9] = pf.bulk_properties[:,3:6]
+    pf.last_rss = rss 
+    
+# Save to print in display
+    pf.last_ps = params
+    pf.best_ps = pf.ps[-5,:]
+    pf.density_list = rescale_density.max_densities()
+    progress.display()
+    
+  def breed(pa, pb, ca, cb):    
     state = True    
     for i in range(pf.p_width):
       rn = random.random()
@@ -4155,154 +4927,375 @@ class pf:
         else:
           state = True
       if(state):
-        pf.ps[-3,i] = pf.ps[pa,i]
-        pf.ps[-4,i] = pf.ps[pb,i]
+        pf.p_children[ca, i] = pf.ps[pa,i]
+        pf.p_children[cb, i] = pf.ps[pb,i]
       else:      
-        pf.ps[-4,i] = pf.ps[pa,i]
-        pf.ps[-3,i] = pf.ps[pb,i]
-    
-# Mutation
-    ri = random.randrange(0, 100)     
-    if(ri > 3):
-      ri = 0
-    else:      
-      wa = numpy.arange(pf.p_width)
-      numpy.random.shuffle(wa)
-      wb = numpy.arange(pf.p_width)
-      numpy.random.shuffle(wb)
-      ra = numpy.random.rand(pf.p_width)
-      rb = numpy.random.rand(pf.p_width)
-    for m in range(ri):
-      ri = random.randrange(0, 100) 
-      if(ri < 90):
-        pf.ps[-3,wa[m]] = pf.ps[-3,wa[m]] + (0.5 - ra[m]) * pf.ps[-2,wa[m]]
-      else:  
-        pf.ps[-3,wa[m]] = pf.ps[-3,wa[m]] * (0.5 - ra[m]) * pf.ps[-2,wa[m]]
-      if(ri < 90):        
-        pf.ps[-4,wb[m]] = pf.ps[-4,wb[m]] + (0.5 - rb[m]) * pf.ps[-2,wb[m]]
-      else:  
-        pf.ps[-4,wb[m]] = pf.ps[-4,wb[m]] * (0.5 - rb[m]) * pf.ps[-2,wb[m]]
-    
-# No clones
-    vary = False
-    for p in range(pf.pop_size_d):
-      if((pf.ps[-3,:] == pf.ps[p,:]).all()):
-        vary = True
-        break
-    if(vary):
-      r = numpy.random.rand(pf.p_width)
-      pf.ps[-3,:] = pf.ps[-3,:] * pf.ncv * (0.5 - r)
-    vary = False
-    for p in range(pf.pop_size_d):
-      if((pf.ps[-4,:] == pf.ps[p,:]).all()):
-        vary = True
-        break
-    if(vary):
-      r = numpy.random.rand(pf.p_width)
-      pf.ps[-4,:] = pf.ps[-4,:] * pf.ncv * (0.5 - r)
-    
-  def pp_children(pa, pb): 
-# Run child A
-    pf.update_potential(pf.ps[-3,:])
-    pf.rss[-3] = pf.get_rss()  
-    pr = pa
-    if(pf.rss[pa]<pf.rss[pb]):
-      pr = pb        
-    if(pf.rss[-3]<pf.rss[pr]):
-      pf.ps[pr,:] = pf.ps[-3,:]
-      pf.rss[pr] = pf.rss[-3]          
-      if(pf.rss[pr] < pf.rss[-5]):
-        pf.since_improvement = 0
-        pf.ps[-5,:] = pf.ps[pr,:]
-        pf.rss[-5] = pf.rss[pr]
+        pf.p_children[cb, i] = pf.ps[pa,i]
+        pf.p_children[ca, i] = pf.ps[pb,i]
         
-# Run child B
-    pf.update_potential(pf.ps[-4,:])        
-    pf.rss[-4] = pf.get_rss()  
-    pr = pa
-    if(pf.rss[pa]<pf.rss[pb]):
-      pr = pb        
-    if(pf.rss[-4]<pf.rss[pr]):
-      pf.ps[pr,:] = pf.ps[-4,:]
-      pf.rss[pr] = pf.rss[-4]        
-      if(pf.rss[pr] < pf.rss[-5]):
-        pf.since_improvement = 0
-        pf.ps[-5,:] = pf.ps[pr,:]
-        pf.rss[-5] = pf.rss[pr]
+# Mutation (possibly)
+    pf.p_children[ca, :] = pf.mutate(pf.p_children[ca, :], chance=5) 
+    pf.p_children[cb, :] = pf.mutate(pf.p_children[cb, :], chance=5)    
+
+# No clones - Child A
+    vary = False
+    for p in range(pf.pop_size_d):
+      if((pf.p_children[ca, :] == pf.ps[p,:]).all()):
+        vary = True
+        break
+    if(vary):
+      r = numpy.random.rand(pf.p_width)
+      pf.p_children[ca, :] = pf.p_children[ca, :] * pf.ncv * (0.5 - r)
     
-  def pf_children(pa): 
-# Run child A
-    pf.update_potential(pf.ps[-3,:])
-    pf.rss[-3] = pf.get_rss()  
-    if(pf.rss[-3]<pf.rss[pa]):
-      pf.ps[pa,:] = pf.ps[-3,:]
-      pf.rss[pa] = pf.rss[-3]          
-      if(pf.rss[pa] < pf.rss[-5]):
-        pf.since_improvement = 0
-        pf.ps[-5,:] = pf.ps[pa,:]
-        pf.rss[-5] = pf.rss[pa]
-# Run child B
-    pf.update_potential(pf.ps[-4,:])
-    pf.rss[-4] = pf.get_rss()  
-    if(pf.rss[-4]<pf.rss[pa]):
-      pf.ps[pa,:] = pf.ps[-4,:]
-      pf.rss[pa] = pf.rss[-4]          
-      if(pf.rss[pa] < pf.rss[-5]):
-        pf.since_improvement = 0
-        pf.ps[-5,:] = pf.ps[pa,:]
-        pf.rss[-5] = pf.rss[pa]
-            
-  def make_mutation():   
-# Mutation Array
-    pf.ps[-2,:] = pf.vc_mutation * pf.ps[-5,:]   # Use best fit parameters
-    for n in range(pf.p_width):
-      if(pf.ps[-2,n] == 0.0):
-        pf.ps[-2,n] = pf.vc_mutation
-    
+# No clones - Child B
+    vary = False
+    for p in range(pf.pop_size_d):
+      if((pf.p_children[cb, :] == pf.ps[p,:]).all()):
+        vary = True
+        break
+    if(vary):
+      r = numpy.random.rand(pf.p_width)
+      pf.p_children[cb, :] = pf.p_children[cb, :] * pf.ncv * (0.5 - r)
+
   def extinction():
-    print("Extinction Event")
-    rss_thresh = pf.ext_thresh * numpy.average(pf.rss[:pf.pop_size_d])
-    init = True
+# Extinction for those below rss_thresh
+# Replace with variations of the best 25% parameters
+  
+    pf.extinction_counter = pf.extinction_counter + 1
+    rss_thresh = pf.rss_threshold(pf.extinction_percentage)
+    pf.extinction_threshold_k = rss_thresh
+    
+    top_size = int(pf.pop_size_d / 4)    
+    pf.rss_sort = sort.sort_1d_dp_asc(pf.rss[0:pf.pop_size_d])
+    top_rss_min = pf.rss_sort[top_size-1]
+    pf.extinction_threshold_t = top_rss_min
+    
+    n = 0
+    for i in range(pf.pop_size_d):
+      if(pf.rss[i] <= top_rss_min and n < top_size):
+        pf.p_top[n,:] = pf.ps[i,:]
+        n = n + 1
+      if(n == top_size):
+        break
+    
+#pf.rss_sort = numpy.zeros((pf.pop_size_d,),)
+
     for p in range(pf.pop_size_d):
-      if(pf.rss[p]<=rss_thresh):    
-        if(init):
-          pf.ps[-6,:] = pf.ps[p,:]
-          pf.ps[-7,:] = pf.ps[p,:]
-          init = False
-        else:
-          for n in range(pf.p_width):
-            if(pf.ps[p,n]<pf.ps[-6,n]):
-              pf.ps[-6,n] = pf.ps[p,n]
-            if(pf.ps[p,n]>pf.ps[-7,n]):
-              pf.ps[-7,n] = pf.ps[p,n]
-    pf.ps[-8,:] = pf.ps[-7,:] - pf.ps[-6,:]
+      if(pf.rss[p]>rss_thresh):   
+        r_top = numpy.random.randint(top_size)
+        
+        pf.ps[p,:] = pf.random_p(pf.p_top[r_top], 0.01)
+
+        pf.update_potential(pf.ps[p,:])
+        pf.rss[p] = pf.get_rss() 
+        pf.check_improvement(pf.ps[p,:], pf.rss[p])
+        
+  def enhance():
+# Enhance best 10% with gradient descent
+    top_size = int(pf.pop_size_d / 10)    
+    pf.rss_sort = sort.sort_1d_dp_asc(pf.rss[0:pf.pop_size_d])
+    top_rss = pf.rss_sort[top_size-1]
     
     for p in range(pf.pop_size_d):
-      if(pf.rss[p]>rss_thresh):    
-        r = numpy.random.rand(pf.p_width)
-        pf.ps[p,:] = pf.ps[-5,:] + pf.vc_extinction * (0.5 - r) * pf.ps[-8,:]
-        pf.update_potential(pf.ps[p,:])
-        pf.rss[p] = pf.get_rss()  
-        
-        if(pf.rss[p] < pf.rss[-5]):
-          pf.since_improvement = 0
-          pf.ps[-5,:] = pf.ps[p,:]
-          pf.rss[-5] = pf.rss[p]
-        print(pf.rss[-3], pf.rss[-4], pf.rss[-5], pf.since_improvement)
+      if(pf.rss[p] <= top_rss):
+        params = gd.opt(pf.gd_rss, pf.ps[p])
+        if(gd.rss_out < pf.rss[p]):
+          pf.rss[p] = gd.rss_out
+          pf.ps[p, :] = numpy.copy(params)
+          
+  def gd_rss(params):
+    pf.update_potential(params)
+    return pf.get_rss() 
+
+  def estimate_calc_counter():
+  
+    e = 0
+    
+    for c in range(pf.spline_cycles + 1):
+      e = e + pf.pop_size
+      e = e + pf.pop_size
+            
+      gens = pf.generations
+      if(c > 1):    
+        gens = pf.spline_generations
+      for gen in range(gens):
+        e = e + 2 * pf.pop_size
+        e = e + 2 * pf.fresh_size
+        if((gen % pf.extinction_frequency) == 0 and gen > 0 and gen < pf.generations-1):
+          e = e + pf.pop_size
+        if((gen % pf.enhance_frequency) == 0):
+          e = e + (300 * (pf.pop_size // 4))
+    
+    pf.calc_counter_expected = e
+  
+  def random_p(c=0.0, m=1.0):
+#
+    lower = pf.p_var[0,:]
+    upper = pf.p_var[1,:]
+    range = upper - lower
+    
+# If there's no center, take midpoint of upper/lower - else center it on the parameters c
+    if(type(c) != numpy.ndarray and c == 0.0):
+      c = lower + 0.5 * range 
+    
+# Multiply range
+    m_range = m * range
+    
+# Get random parameters 0 to 1
+    r = numpy.random.rand(pf.p_width)
+    
+# New parameters
+    p_new = c + (r - 0.5) * m_range
+    
+# Return
+    return p_new
+    
+  def mutate(params, chance=5):
+    mutant = pf.random_p(params, 1.0)
+    for i in range(len(params)):
+      if(random.randrange(0, 100) <= chance):
+        params[i] = mutant[i]
+    return params
     
   def end():
     pf.update_potential(pf.ps[-5,:])
     rss = pf.get_rss() 
     
-    print("RSS: ", rss)
+    results = []
+    results.append("RSS: " + str(rss))
     
     for bp_id in range(bp.bp_configs_count):
-      print('alat:', bp.calc_alat[bp_id])
-      print('v0:', bp.calc_v0[bp_id])
-      print('e0:', bp.calc_e0[bp_id])
-      print('b0:', bp.calc_b0[bp_id])
-      print('b0/GPA:', 160.230732254e0 * bp.calc_b0[bp_id])
+      results.append("alat: " + str(bp.calc_alat[bp_id]))
+      results.append("v0: " + str(bp.calc_v0[bp_id]))
+      results.append("e0: " + str(bp.calc_e0[bp_id]))
+      results.append("b0: " + str(bp.calc_b0[bp_id]))
+      results.append("b0/GPA: " + str(160.230732254e0 * bp.calc_b0[bp_id]))
+      return results
   
+# To Do
+  def sort_parameters():
+    pf.rss[0:pf.pop_size_d] = sort.sort_1d_dp_asc(pf.rss[0:pf.pop_size_d])
+    
+#kt = sort.key_table
+#pf.ps[0:pf.pop_size_d] = sort.match_key_table_2d_dp_kt(pf.ps[0:pf.pop_size_d], kt)
+    
+  def output():
+    pot_dir = g.dirs['fitting'] + "/fits"
+    std.make_dir(pot_dir)   
+  
+    pf.output_counter = pf.output_counter + 1
+    pf.update_potential(pf.ps[-5,:])
+  
+    c = str(pf.output_counter)
+    
+    while(len(c)<4):
+      c = "0" + c
+    
+    fit_dir = pot_dir + "/" + c
+    std.make_dir(fit_dir)   
+    
+    potential.plot_fortran_potentials(fit_dir)
+    
+###########################################
+#  CLASS progres
+###########################################
+class progress:
+
+  def display(results=None):
+  
+# CLEAR
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+    print("###################################################################")
+    print("#  Pop/Fresh size  :   " + progress.pad_l(pf.pop_size)  + " /  " +  progress.pad_l(pf.fresh_size))
+    print("#  Generations:        " + progress.pad_l(pf.generations) )
+    print("#  Spline Cycles:      " + progress.pad_l(pf.spline_cycles) + " /  " + progress.pad_l(pf.spline_generations) + "")
+    print("#  Ext/Enhance Freq:   " + progress.pad_l(pf.extinction_frequency) + " /  " + progress.pad_l(pf.enhance_frequency) + "")    
+    print("###################################################################")
+    print("# Timer:              " + progress.pad_l(time.time() - pf.start_time, 10) + " (Estimate: " + progress.pad_l(pf.time_estimate, 10) + ")")
+    print("# Stage:              " + pf.stage) 
+    print("# Cycle:              " + progress.pad_l(pf.this_cycle, 10))  
+    print("###################################################################")
+    print("# Gen:                " + progress.pad_l(pf.this_gen, 10))  
+    print("# Exctinctions:       " + progress.pad_l(pf.extinction_counter, 10) 
+          + " (" + progress.pad_l(pf.extinction_threshold_t, 10) + "/" 
+          + "" + progress.pad_l(pf.extinction_threshold_k, 10) + ")") 
+    print("# Since Improvement:  " + progress.pad_l(pf.since_improvement, 10))  
+    print("#    ")  
+    print("# Best RSS:           ", pf.best_rss) 
+    print("#    ")   
+    print("# Last RSS:           ", pf.last_rss)  
+    for bp_id in range(len(pf.bulk_properties)):
+      print("#                     a0  " + progress.pad_l(pf.bulk_properties[bp_id,3], 10) + "   " + progress.pad_l(pf.bulk_properties[bp_id,6], 10) + "   " + progress.pad_l(pf.bulk_properties[bp_id,0], 10) + " ") 
+      print("#                     e0  " + progress.pad_l(pf.bulk_properties[bp_id,4], 10) + "   " + progress.pad_l(pf.bulk_properties[bp_id,7], 10) + "   " + progress.pad_l(pf.bulk_properties[bp_id,1], 10) + " ") 
+      print("#                     b0  " + progress.pad_l(pf.bulk_properties[bp_id,5], 10) + "   " + progress.pad_l(pf.bulk_properties[bp_id,8], 10) + "   " + progress.pad_l(pf.bulk_properties[bp_id,2], 10) + " ") 
+      
+    print("#    ")  
+    print("# PROGRESS:   ", progress.bar(pf.progress, 25))  
+    print("# TIME LEFT:  ", round(pf.time_remaining,2))  
+    print("#   ")  
+    print("# Parameters (this): ", end="")
+    if(type(pf.last_ps) == numpy.ndarray):
+      for pn in range(len(pf.last_ps)):
+        print(pf.last_ps[pn], end=" ")
+        if((pn+1) % 5 == 0):
+          print()
+          print("#                   ", end="")
+    print("")
+    print("# Parameters (best): ", end="")
+    if(type(pf.best_ps) == numpy.ndarray):
+      for pn in range(len(pf.best_ps)):
+        print(pf.best_ps[pn], end=" ")
+        if((pn+1) % 5 == 0):
+          print()
+          print("#                   ", end="")
+    print("")
+    print("#   ")  
+    print("# Density List: ", pf.density_list)  
+    print("#   ")  
+    
+#    pf.last_ps = params
+#pf.best_ps = params
+    
+    print("###################################################################")
+    
+    if(type(results) == list):
+      for r in results:
+        print("# " + str(r))  
+      print("###################################################################")
+        
+#for bp_id in range(bp.bp_configs_count):
+    
+#pf.since_improvement
+    """ 
+    print("Running Fit")
+    print("Pop size: ", str(pf.pop_size), " (", str(pf.pop_size_d), ")", sep="")
+    print("Fresh size: ", str(pf.fresh_size), " (", str(pf.fresh_size_d), ")", sep="")
+    print("Generations: ", str(pf.generations), sep="")
+ pf.spline_cycles
+    """
+ 
+  @staticmethod
+  def pad_r(inp, p=7):
+    if(inp == None):
+      return ""      
+    out = str(inp).strip()  
+    while(len(out)<p):
+      out = out + " "      
+    return out[0:p]
+    
+  @staticmethod
+  def pad_l(inp, p=7):
+    if(inp == None):
+      return ""      
+    out = str(inp).strip()  
+    while(len(out)<p):
+      out = " " + out     
+    return out[0:p]
+    
+  @staticmethod
+  def bar(p, w=25):
+    out = ''
+    p_num = p
+    p = p * (25 / 100)
+    for i in range(w):
+      if(i <= p):
+        out = out + '#'
+      else:
+        out = out + '_'
+    out = out + '   ' + str(p_num) + '%'
+    return out
+    
+  """
+  start_time = 0
+  since_improvement = 0
+  this_gen = 0
+  this_cycle = 0
+  total_generations = 0
+  last_rss = 0.0
+  best_rss = 0.0
+  """
+
+###########################################
+#  CLASS g
+###########################################
+class gd:
+
+  precision = 1.0e-6
+  max_iterations = 10
+  h = 1.0e-8
+  momentum = 0.1
+  p_in = None
+  rss_in = None
+  p_out = None
+  rss_out = None
+  
+# Central Difference
+  def df(p):
+    d = numpy.zeros((len(p),),)
+    for i in range(len(p)):
+      p_f = numpy.copy(p)
+      p_f[i] = p_f[i] + gd.h
+      p_b = numpy.copy(p)
+      p_b[i] = p_b[i] - gd.h
+      d[i] = (gd.rss(p_f) - gd.rss(p_b)) / (2 * gd.h)
+    return d
+
+  def line_search(p, dp):
+# Back track
+    best_rss = gd.rss_in
+    best_gamma = 0.0
+    gamma = 20.0 * gd.last_gamma 
+    if(gamma <1.0e-8):
+      gamma <1.0e-6
+    loop = True
+    n = 0
+    while(gamma > 1.0e-12):
+      n = n + 1
+      p_test = p - gamma * dp
+      rss = gd.rss(p_test)
+      pf.check_improvement(p + gamma * dp, rss)
+      gamma = 0.5 * gamma
+      if(best_rss is None or rss < best_rss):
+        p_best = p_test
+        best_rss = rss
+        best_gamma = gamma
+    gd.last_gamma = best_gamma
+    return best_rss, best_gamma * dp
+    
+# Gradient Descent
+  def opt(f_rss, p0):
+    gd.rss = f_rss   
+    gd.last_gamma = 1.0
+    p = p0
+    
+    gd.p_in = numpy.copy(p)
+    gd.rss_in = gd.rss(p)
+    
+    best_p = numpy.copy(gd.p_in)
+    best_rss = gd.rss_in
+
+    n = 0
+    last_dp = 0.0
+    while(n < gd.max_iterations):
+      df = gd.df(p)
+      rss, dp = gd.line_search(p, df)
+      if(rss > best_rss):
+        n = gd.max_iterations
+      else:
+        p = p - (gd.momentum * last_dp + dp)
+        last_dp = dp
+        rss = gd.rss(p)
+        best_p = numpy.copy(p)
+        best_rss = rss
+        n = n + 1
+
+    pf.check_improvement(best_p, best_rss)
+    gd.p_out = numpy.copy(best_p)
+    gd.rss_out = best_rss
+    
+    return p
+
 ###########################################
 ###########################################
 #  MAIN

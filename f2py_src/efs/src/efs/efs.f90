@@ -42,10 +42,9 @@ INCLUDE "efs.energy.f90"
 INCLUDE "efs.energy_force.f90"
 INCLUDE "efs.efs.f90"
 
-
+INCLUDE "efs.max_density.f90"
 
 INCLUDE "efs.get.f90"
-
 
 
 END MODULE efs

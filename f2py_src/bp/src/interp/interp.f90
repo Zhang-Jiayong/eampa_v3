@@ -50,4 +50,6 @@ INCLUDE "interp.trap.f90"
 INCLUDE "interp.fill.f90"
 INCLUDE "interp.fill_zoor.f90"
 
+INCLUDE "interp.search_x.f90"
+
 END MODULE interp

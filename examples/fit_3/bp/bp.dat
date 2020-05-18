@@ -1,0 +1,5 @@
+# Bulk Properties File
+
+units pressure=GPA length=ang energy=ev
+
+AL b0=77 alat=4.05 e0=-3.36 ec=114,62.9,31.6 type=fcc expansion=4 rcut=6.5 amu_per_crystal=107.92

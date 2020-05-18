@@ -41,6 +41,10 @@ class bp_calc:
     bp.energy()
     bp.calculate_bp()    
     
+    
+    # Output to Terminal
+    b_props.bp_output_terminal()
+    
     # Output to File
     b_props.bp_output()
     
@@ -48,4 +52,8 @@ class bp_calc:
     b_props.bp_eos_plot()
     potential.plot_fortran_potentials()
     potential.plot_python_potentials()
+    
+    
+    
+    
     

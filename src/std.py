@@ -55,6 +55,7 @@ class std:
         indata = 0
       elif(indata == 0 and not (char == " " and last_char == " ")):
         out = out + char
+      last_char = char
     return out   
     
   @staticmethod
@@ -399,3 +400,23 @@ class std:
     fh.write(line)  
   
   
+  @staticmethod
+  def print_file_line(title, title_pad, fields, field_pad):
+    if(type(fields) == numpy.ndarray):
+      t = fields
+      fields = []
+      for ti in t:
+        fields.append(ti)    
+    elif(type(fields) != list):
+      fields = [fields]
+    
+    line = str(title)
+    while(len(line)<title_pad):
+      line = line + ' '
+    for f in fields:
+      f_str = str(f)
+      while(len(f_str)<field_pad):
+        f_str = f_str + ' '
+      line = line + f_str + ' '
+    line = line + '\n'
+    print(line,end='')  

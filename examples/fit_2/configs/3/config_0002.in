@@ -1,0 +1,67 @@
+! Edited 6:4   22/4/2020
+&CONTROL 
+calculation = "scf", 
+disk_io = 'low', 
+etot_conv_thr = 1.0E-4, 
+forc_conv_thr = 1.0D-3, 
+nstep = 40, 
+outdir = "/scratch", 
+prefix = "CTXfrgOdtTXDcHqQ", 
+pseudo_dir = "/rds/homes/b/bxp912/pp", 
+restart_mode = 'from_scratch', 
+tprnfor = .true., 
+tstress = .true., 
+/ 
+&SYSTEM 
+celldm(1) = 12.12620634, 
+degauss = 0.04, 
+ecutrho = 200, 
+ecutwfc = 50, 
+ibrav = 0, 
+nat = 16, 
+nspin = 1, 
+ntyp = 1, 
+occupations = 'smearing', 
+smearing = 'mv', 
+starting_magnetization(1) = 0, 
+/ 
+&ELECTRONS 
+conv_thr = 1.0D-6, 
+diagonalization = 'david', 
+mixing_beta = 1.0000000E-01, 
+mixing_mode = 'TF', 
+mixing_ndim = 10, 
+/ 
+&IONS 
+ion_dynamics = 'bfgs', 
+/ 
+&CELL 
+cell_dynamics = 'bfgs', 
+cell_factor = 2.0, 
+press = 0.0, 
+/ 
+ATOMIC_SPECIES 
+Al 26.982 Al.pbe-nl-kjpaw_psl.1.0.0.UPF 
+ATOMIC_POSITIONS crystal
+Al   -0.000906966119256   -0.000800710535141   -0.000653301061146   
+Al   0.249375826226   0.248696834005   0.249352457045   
+Al   -0.00105856233275   -0.000747856128196   0.499919593197   
+Al   0.249124957513   0.249726199199   0.749638001714   
+Al   -0.00018036209539   0.499810356571   -0.00112442227855   
+Al   0.249476132554   0.748753661648   0.24918437198   
+Al   -0.000754674651576   0.49956292575   0.498893318744   
+Al   0.249313663739   0.749461552236   0.749704555678   
+Al   0.499773430715   -0.000553157154274   -0.000863542071671   
+Al   0.749526955472   0.249619164093   0.25019633347   
+Al   0.499651610117   -0.000550504844342   0.499807661483   
+Al   0.749271898863   0.249290051947   0.749239152966   
+Al   0.499452781949   0.499568673339   -0.000575280529761   
+Al   0.749084753968   0.7493346338   0.248849523346   
+Al   0.500023058336   0.498644810777   0.498409701611   
+Al   0.748349199009   0.748433619436   0.749158080716   
+K_POINTS automatic
+11 11 11 1 1 1  
+CELL_PARAMETERS alat
+1.0 0.0 0.0 
+0.0 1.0 0.0 
+0.0 0.0 1.0

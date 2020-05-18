@@ -1,0 +1,16 @@
+#A
+#TYPE spline_n_node
+#P1 0.0    // alpha
+#P2 0.0    // d
+#P3 1.0    // re
+#P4 0.0    // re
+#P5 2.0    // alpha
+#P6 1.0    // d
+#P7 0.0    // re
+#P8 0.0    // re
+#P9 7.0    // alpha
+#P10 0.0    // d
+#P11 0.0    // re
+#P12 0.0    // re
+#L 0.0
+#U 6.5

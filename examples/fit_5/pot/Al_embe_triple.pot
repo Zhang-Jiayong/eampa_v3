@@ -1,0 +1,7 @@
+#A
+#TYPE triple_embedding
+#P1 1.0   
+#P2 1.0
+#P3 1.0
+#L 0.0
+#U 1.0

@@ -1,0 +1,5 @@
+#A
+#TYPE embedding_fs
+#P1 0.01   // rd
+#L 0.0
+#U 7.0

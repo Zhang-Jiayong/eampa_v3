@@ -1,0 +1,5 @@
+#A
+#TYPE quadratic_density
+#P1 2.5   // rd
+#L 0.0
+#U 7.0

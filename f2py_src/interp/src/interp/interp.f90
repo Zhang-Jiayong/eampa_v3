@@ -38,4 +38,10 @@ INCLUDE "interp.trap.f90"
 
 INCLUDE "interp.fill.f90"
 
+INCLUDE "interp.search_x.f90"
+
+
+
+INCLUDE "interp.speed_test.f90"
+
 END MODULE interp

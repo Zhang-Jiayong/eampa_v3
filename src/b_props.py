@@ -433,7 +433,74 @@ class b_props:
 
       
       
+  @staticmethod
+  def bp_output_terminal():  
   
+    for bp_id in range(bp.bp_configs_count):
+      fh = open(g.dirs['results'] + '/' + 'bp_' + str(bp_id + 1) + '.dat', 'w')
+
+
+      t_pad = 30
+      f_pad = 18
+      
+      
+      std.print_file_line('######################################################', 1, '', 1)
+      std.print_file_line('Known Properties', 1, '', 1)
+      std.print_file_line('######################################################', 1, '', 1)
+      std.print_file_line('', 1, '', 1)
+      std.print_file_line('All units are in ev/Ang unless specified', 1, '', 1)
+      std.print_file_line('Energy: eV', 1, '', 1)
+      std.print_file_line('Length: ang', 1, '', 1)
+      std.print_file_line('Force: eV/ang', 1, '', 1)
+      std.print_file_line('Pressure: eV/ang3', 1, '', 1)
+      std.print_file_line('', 1, '', 1)
+      
+      std.print_file_line('Atoms per crystal:', t_pad, bp.known_atoms_per_crystal[bp_id], f_pad)
+      std.print_file_line('Expansion:', t_pad, bp.known_expansion[bp_id], f_pad)
+      std.print_file_line('', 1, '', 1)
+      std.print_file_line('Equation of State', 1, '', 1)
+      std.print_file_line('#################', 1, '', 1)
+      std.print_file_line('alat:', t_pad, bp.known_alat[bp_id], f_pad)
+      std.print_file_line('e0:', t_pad, bp.known_e0[bp_id], f_pad)
+      std.print_file_line('b0:', t_pad, bp.known_b0[bp_id], f_pad)
+      std.print_file_line('b0/GPA:', t_pad, 160.230732254e0 * bp.known_b0[bp_id], f_pad)
+      std.print_file_line('', 1, '', 1)
+      std.print_file_line('Stiffness Matrix', 1, '', 1)
+      std.print_file_line('#################', 1, '', 1)
+      std.print_file_line('Stiffness:', t_pad, bp.known_ec[bp_id,0,:], f_pad)
+      for i in range(1,6):   
+        std.print_file_line('', t_pad, bp.known_ec[bp_id,i,:], f_pad)
+      std.print_file_line('', 1, '', 1)
+      
+      std.print_file_line('Stiffness (GPA):', t_pad, 160.230732254e0 * bp.known_ec[bp_id,0,:], f_pad)
+      for i in range(1,6):   
+        std.print_file_line('', t_pad, 160.230732254e0 * bp.known_ec[bp_id,i,:], f_pad)
+        
+      print()
+      print()
+
+      std.print_file_line('######################################################', 1, '', 1)
+      std.print_file_line('Calculated Properties', 1, '', 1)
+      std.print_file_line('######################################################', 1, '', 1)
+      std.print_file_line('', 1, '', 1)
+      
+      std.print_file_line('Equation of State', 1, '', 1)
+      std.print_file_line('#################', 1, '', 1)
+      std.print_file_line('alat:', t_pad, bp.calc_alat[bp_id], f_pad)
+      std.print_file_line('v0:', t_pad, bp.calc_v0[bp_id], f_pad)
+      std.print_file_line('e0:', t_pad, bp.calc_e0[bp_id], f_pad)
+      std.print_file_line('b0:', t_pad, bp.calc_b0[bp_id], f_pad)
+      std.print_file_line('b0/GPA:', t_pad, 160.230732254e0 * bp.calc_b0[bp_id], f_pad)
+      std.print_file_line('', 1, '', 1)  
+      
+      std.print_file_line('Stiffness Matrix', 1, '', 1)
+      std.print_file_line('#################', 1, '', 1)
+      std.print_file_line('Stiffness:', t_pad, bp.calc_ec[bp_id,0,:], f_pad)
+      for i in range(1,6):   
+        std.print_file_line('', t_pad, bp.calc_ec[bp_id,i,:], f_pad)
+      std.print_file_line('', 1, '', 1)
+        
+        
   @staticmethod
   def bp_eos_plot():       
   

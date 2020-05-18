@@ -52,19 +52,21 @@ REAL(kind=DoubleReal), INTENT(OUT) :: coeffs(1:SIZE(node_a) + SIZE(node_b) - 2)
 INTEGER(kind=StandardInteger) :: m_size = 0
 INTEGER(kind=StandardInteger) :: m_half_size = 0
 INTEGER(kind=StandardInteger) :: d_loop = 0
-REAL(kind=DoubleReal), ALLOCATABLE, DIMENSION(:,:) :: x
-REAL(kind=DoubleReal), ALLOCATABLE, DIMENSION(:) :: y
+REAL(kind=DoubleReal) :: x(1:SIZE(node_a,1)+SIZE(node_b,1)-2,1:SIZE(node_a,1)+SIZE(node_b,1)-2)
+REAL(kind=DoubleReal) :: y(1:SIZE(node_a,1)+SIZE(node_b,1)-2)
+REAL(kind=DoubleReal) :: x_coeffs(1:(SIZE(node_a,1)+SIZE(node_b,1)-2))
+REAL(kind=DoubleReal) :: x_exponent(1:(SIZE(node_a,1)+SIZE(node_b,1)-2))
 INTEGER(kind=StandardInteger) :: n, row, col, a_row
-REAL(kind=DoubleReal), ALLOCATABLE, DIMENSION(:) :: x_coeffs
 !############################################################
+! Sizes
 m_size = SIZE(node_a) + SIZE(node_b) - 2
 m_half_size = m_size / 2
-d_loop = SIZE(node_a) - 1
-
-ALLOCATE(x(1:m_size,1:m_size))
-ALLOCATE(x_coeffs(1:m_size))
-ALLOCATE(y(1:m_size))
-
+! x exponents
+DO n = 1, m_size
+  x_exponent(n) = 1.0D0 * (n - 1)
+END DO
+! Coeffs
+x_coeffs = 1
 ! Make y matrix
 row = 1
 DO n=2,SIZE(node_a)
@@ -74,30 +76,36 @@ DO n=2,SIZE(node_a)
   row = row + 1
 END DO
 ! Make x matrix
-row = 1
-x_coeffs = 1
-DO a_row = 1, d_loop
+row = 0
+DO a_row = 1, m_half_size
   ! NODE A
-  DO col = 1, m_size 
-    x(row, col) = x_coeffs(col) * node_a(1)**(col - a_row)
-  END DO
   row = row + 1
+  DO col = 1, a_row -1
+    x(row, col) = 0.0D0
+  END DO
+  DO col = a_row, m_size
+    x(row, col) = x_coeffs(col) * node_a(1)**x_exponent(col)
+  END DO
   ! NODE B
-  DO col = 1, m_size 
-    x(row, col) = x_coeffs(col) * node_b(1)**(col - a_row)
-  END DO
   row = row + 1
-  ! UPDATE x_coeffs
-  DO col = 1, m_size 
-    x_coeffs(col) = x_coeffs(col) * (col - a_row)
+  DO col = 1, a_row -1
+    x(row, col) = 0.0D0
+  END DO
+  DO col = a_row, m_size
+    x(row, col) = x_coeffs(col) * node_b(1)**x_exponent(col)
+  END DO
+  ! UPDATE COEFFS AND EXPONENT
+  DO col = 1, m_size
+    x_coeffs(col) = x_coeffs(col) * x_exponent(col)
+  END DO
+  DO col = 1, m_size
+    IF(x_exponent(col) .GT. 0.0D0)THEN
+      x_exponent(col) = x_exponent(col) - 1.0D0
+    END IF
   END DO
 END DO
 ! SOLVE
 CALL sls_solve(x, y, coeffs)
-! FREE MEM
-DEALLOCATE(x)
-DEALLOCATE(x_coeffs)
-DEALLOCATE(y)
 !############################################################
 END SUBROUTINE spline_ab_poly 
 

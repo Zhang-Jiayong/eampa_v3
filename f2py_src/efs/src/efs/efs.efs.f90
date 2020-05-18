@@ -14,7 +14,6 @@ END DO
 !$OMP END PARALLEL
 CALL end_t(efs_timer)
 efs_timer_sum = efs_timer_sum + efs_timer
-
 END SUBROUTINE energy_force_stress
 
 

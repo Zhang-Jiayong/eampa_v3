@@ -189,7 +189,11 @@ IF(known_set(bp_id, 2))THEN
   rss(bp_id, 2) = (known_e0(bp_id) - calc_e0(bp_id))**2
 END IF
 IF(known_set(bp_id, 3))THEN
-  rss(bp_id, 3) = (known_b0(bp_id) - calc_b0(bp_id))**2
+  IF(calc_b0(bp_id) .GE. 0)THEN
+    rss(bp_id, 3) = (known_b0(bp_id) - calc_b0(bp_id))**2
+  ELSE  
+    rss(bp_id, 3) = 1000.0D0 * (known_b0(bp_id) - calc_b0(bp_id))**2
+  END IF
 END IF
 IF(known_set(bp_id, 4))THEN
   rss(bp_id, 4) = SUM((known_ec(bp_id,1:6,1:6) - calc_ec(bp_id,1:6,1:6))**2)

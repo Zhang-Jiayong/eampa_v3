@@ -4,7 +4,9 @@
 top=$("pwd")
 echo $top
 for d in */ ; do
+  echo "####################################"
   echo $d
+  echo "####################################"
   cd $d
   if test -f "build.sh"; then
     ./build.sh

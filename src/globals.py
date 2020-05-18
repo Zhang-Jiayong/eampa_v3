@@ -16,6 +16,7 @@ class g:
          'eos': 'wd/plots/eos', 
          'ec': 'wd/plots/ec', 
          'pots': 'wd/plots/pots',  
+         'fitting': 'wd/fitting',  
          }
   
   times = {
@@ -36,13 +37,27 @@ class g:
   configs = {
             'config_files': [],
             'configs': [],
-            }
+            }  
+            
+  fit = {
+  'pop_size': 16,
+  'fresh_size': 8,
+  'generations': 10, 
+  'spline_cycles': 1, 
+  'spline_generations': 5, 
+  'extinction_percentage': 50,  
+  'extinction_frequency': 3,
+  }
+            
 
   dft_energy_adjustments = {}
   
   bulk_properties = {}
   
   labels = {}
+  
+    
+  
 
   tab_size = 1001
   tab_width = 4

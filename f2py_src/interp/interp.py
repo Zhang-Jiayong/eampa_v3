@@ -1,6 +1,15 @@
 from f_interp import interp
 import numpy
 
+
+interp.speed_test()
+
+
+
+
+
+
+"""
 def f(x):
   return 0.03 * x**4 - 1.63 * x**3 + 1.22 * x**2 - 0.0001 * x + 3.7
   
@@ -53,3 +62,6 @@ fill = interp.fill(x, y, 21,4)
 print(x)
 print(y)
 print(fill)
+"""
+
+

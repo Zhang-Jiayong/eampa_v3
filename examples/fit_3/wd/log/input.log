@@ -1,0 +1,7 @@
+potential file="pot/AL.pot"
+configs dir="configs"
+rss force=0.1 energy=10 stress=1.0 alat=10.0 e0=10.0 b0=0.1 ec=0.01 g=0.01 e=0.01 v=0.01 bp=100.0
+dft e_adjust='dft/energy_adjustments.in'
+bp bp_file='bp/bp.dat'
+run type=fit
+fit gens=20 ps=30 fs=10 ep=60 ef=2 sgens=5 scycles=3

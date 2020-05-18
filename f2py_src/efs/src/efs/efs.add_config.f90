@@ -54,7 +54,7 @@ IF(SIZE(labels_in,1) .EQ. SIZE(coords_in,1))THEN
   key(cc, 2) = kb
   
   ! STORE
-  energies(cc) = energy_in
+  energies(cc) = energy_in                ! Total Energy
   labels(ka:kb) = labels_in(:)
   coords(ka:kb, 1:3) = coords_in(:, 1:3)
   forces(ka:kb, 1:3) = forces_in(:, 1:3)  

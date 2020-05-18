@@ -61,7 +61,7 @@ DO i = 1, arr_l
     nn = 1
   END IF
   
-  CALL interpn(xi, x(n:n+n_interp-1), y(n:n+n_interp-1), out_arr(i,2))
+  CALL interpn(xi, x(nn:nn+n_interp-1), y(nn:nn+n_interp-1), out_arr(i,2))
 END DO
 
 

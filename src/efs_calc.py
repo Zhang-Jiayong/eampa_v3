@@ -9,7 +9,6 @@ from f2py_lib.f_bp import bp
 import matplotlib.pyplot as plt
 import time
 
-
 class efs_calc:
 
   def run_energy():
@@ -24,6 +23,7 @@ class efs_calc:
     efs_calc.output_energy()
     potential.plot_fortran_potentials()
     potential.plot_python_potentials()
+    
   
   def run_energy_force():
   
@@ -56,6 +56,7 @@ class efs_calc:
     potential.plot_python_potentials()
   
 
+    #efs.max_density_calc()
 
   def output_energy():
   
